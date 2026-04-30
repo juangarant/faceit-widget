@@ -1,0 +1,16 @@
+services:
+  faceit-widget:
+    image: juangarant/faceit-widget:latest
+    container_name: faceit_obs_widget
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - FACEIT_API_KEY=${FACEIT_API_KEY}
+      - FACEIT_NICKNAME=${FACEIT_NICKNAME}
+      - STEAM_USERNAME=${STEAM_USERNAME}
+      - STEAM_PASSWORD=${STEAM_PASSWORD}
+      - STEAM_ID64=${STEAM_ID64}
+      - TZ=${TZ:-Europe/Madrid}
+    volumes:
+      - ./data:/usr/src/app/data
