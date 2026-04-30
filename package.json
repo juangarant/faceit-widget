@@ -1,0 +1,13 @@
+{
+  "name": "faceit-obs-widget",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "steam-user": "^5.0.4",
+    "globaloffensive": "^3.0.0"
+  }
+}

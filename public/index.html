@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Faceit & Premier Stats</title>
+    <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css?v=8.0">
+</head>
+<body>
+    <div class="console-widget-flat">
+        <div class="stat-row">
+            <div class="section connection-status">
+                <span class="prompt">FACEIT - DIARIO:</span>
+            </div>
+            <div class="section session-info">
+                <div class="item">
+                    <span class="value" id="val-f-session">0</span>
+                </div>
+                <div class="item session-wl">
+                    [<span class="win">W:<span id="val-f-wins">0</span></span>/<span class="loss">L:<span id="val-f-losses">0</span></span>]
+                </div>
+            </div>
+            <span class="separator">|</span>
+            <div class="section global-stats">
+                <div class="item">
+                    <span class="label">LVL: </span>
+                    <span class="value" id="val-f-level">-</span>
+                </div>
+                <span class="separator">/</span>
+                <div class="item">
+                    <span class="label">ELO: </span>
+                    <span class="value" id="val-f-elo">-</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="stat-row">
+            <div class="section connection-status">
+                <span class="prompt">PREMIER - DIARIO:</span>
+            </div>
+            <div class="section session-info">
+                <div class="item">
+                    <span class="value" id="val-p-session">0</span>
+                </div>
+                <div class="item session-wl">
+                    [<span class="win">W:<span id="val-p-wins">0</span></span>/<span class="loss">L:<span id="val-p-losses">0</span></span>]
+                </div>
+            </div>
+            <span class="separator">|</span>
+            <div class="section global-stats">
+                <div class="item">
+                    <span class="label">RATING: </span>
+                    <span class="value" id="val-p-elo">-</span>
+                </div>
+            </div>
+            <span class="blink">_</span>
+        </div>
+    </div>
+    <script src="script.js?v=8.0"></script>
+</body>
+</html>
