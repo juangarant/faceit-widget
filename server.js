@@ -17,6 +17,14 @@ if (missing.length) {
     process.exit(1);
 }
 
+// === Red de seguridad para errores no capturados ===
+process.on('uncaughtException', (err) => {
+    console.error('💥 uncaughtException:', err.stack || err);
+});
+process.on('unhandledRejection', (err) => {
+    console.error('💥 unhandledRejection:', err);
+});
+
 const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -27,12 +35,12 @@ const client = new SteamUser();
 const csgo = new GlobalOffensive(client);
 
 let player_id = null;
-let cachedStats = { 
+let cachedStats = {
     faceit: { level: "-", elo: "-", sessionElo: "+0", wins: 0, losses: 0 },
     premier: { elo: "-", sessionElo: "+0", wins: 0, losses: 0 }
 };
 
-app.use(express.json()); 
+app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 let token = null;
@@ -48,11 +56,31 @@ client.logOn(token ? { refreshToken: token } : {
 client.on('loggedOn', () => {
     console.log("🟢 [Steam] Bot conectado.");
     client.setPersona(SteamUser.EPersonaState.Online);
-    client.gamesPlayed([730]); 
+    client.gamesPlayed([730]);
+});
+
+// === Handlers de errores y reconexión ===
+client.on('error', (err) => {
+    console.error('❌ [Steam] error:', err.message);
+});
+
+client.on('disconnected', (eresult, msg) => {
+    console.log(`⚠️  [Steam] Desconectado (${msg}). steam-user reconectará automáticamente.`);
+});
+
+csgo.on('disconnectedFromGC', (reason) => {
+    console.log(`⚠️  [CS2] Desconectado del GC (razón: ${reason}). Reintentando en 10s...`);
+    setTimeout(() => {
+        if (client.steamID) client.gamesPlayed([730]);
+    }, 10000);
 });
 
 client.on('refreshToken', (newToken) => {
-    try { fs.writeFileSync(TOKEN_FILE, newToken); } catch (err) {}
+    try {
+        fs.writeFileSync(TOKEN_FILE, newToken);
+    } catch (err) {
+        console.error('⚠️  No se pudo guardar refresh token:', err.message);
+    }
 });
 
 client.on('steamGuard', (domain, callback) => {
@@ -62,15 +90,15 @@ client.on('steamGuard', (domain, callback) => {
 csgo.on('connectedToGC', () => {
     console.log("🎮 [CS2] Conectado al GC. Sincronizando datos...");
     setTimeout(verificarCambioDeDia, 4000);
-    setTimeout(updateCurrentStats, 6000); 
+    setTimeout(updateCurrentStats, 6000);
 });
 
 function fetchPremierData() {
     return new Promise((resolve) => {
         if (!csgo.haveGCSession) return resolve({ elo: "-", wins: 0 });
-        const timeoutId = setTimeout(() => resolve({ elo: "-", wins: 0 }), 8000); 
+        const timeoutId = setTimeout(() => resolve({ elo: "-", wins: 0 }), 8000);
         csgo.requestPlayersProfile(process.env.STEAM_ID64, (profile) => {
-            clearTimeout(timeoutId); 
+            clearTimeout(timeoutId);
             if (profile && profile.rankings) {
                 const pData = profile.rankings.find(r => r.rank_type_id === 11);
                 if (pData && pData.rank_id) resolve({ elo: pData.rank_id, wins: pData.wins || 0 });
@@ -80,34 +108,51 @@ function fetchPremierData() {
     });
 }
 
-async function fetchOfficial(endpoint) {
-    const res = await fetch(`https://open.faceit.com/data/v4/${endpoint}`, {
-        headers: { 'Authorization': `Bearer ${API_KEY}` }
-    });
-    if (!res.ok) throw new Error(`API Error: ${res.status}`);
-    return await res.json();
+// === fetchOfficial con timeout de 10s (causa raíz del cuelgue de las 6 AM) ===
+async function fetchOfficial(endpoint, timeoutMs = 10000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+        const res = await fetch(`https://open.faceit.com/data/v4/${endpoint}`, {
+            headers: { 'Authorization': `Bearer ${API_KEY}` },
+            signal: ctrl.signal
+        });
+        if (!res.ok) throw new Error(`API Error: ${res.status}`);
+        return await res.json();
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 function getStreamerDate(dateObj) {
     const shiftedTime = new Date(dateObj.getTime() - (6 * 60 * 60 * 1000));
-    return new Intl.DateTimeFormat('es-ES', { 
-        timeZone: 'Europe/Madrid', 
-        year: 'numeric', month: '2-digit', day: '2-digit' 
-    }).format(shiftedTime); 
+    return new Intl.DateTimeFormat('es-ES', {
+        timeZone: 'Europe/Madrid',
+        year: 'numeric', month: '2-digit', day: '2-digit'
+    }).format(shiftedTime);
+}
+
+// Helper: escritura defensiva del JSON, no mata el proceso si falla
+function safeWriteJson(filePath, data) {
+    try {
+        fs.writeFileSync(filePath, JSON.stringify(data));
+    } catch (err) {
+        console.error(`⚠️  No se pudo escribir ${path.basename(filePath)}:`, err.message);
+    }
 }
 
 // --- LÓGICA DE MEMORIA AISLADA (SOLO A LAS 6:00 AM) ---
 async function verificarCambioDeDia() {
     const todayStrLocal = getStreamerDate(new Date());
     let savedData = { date: "", faceitElo: "-", premierElo: "-", premierWins: 0 };
-    
+
     if (fs.existsSync(DATA_FILE)) {
-        try { savedData = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); } catch(e) {}
+        try { savedData = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); } catch (e) {}
     }
 
     if (savedData.date !== todayStrLocal) {
         console.log("📸 [Memoria] Cruzando las 6:00 AM. Tomando foto base...");
-        
+
         let fctElo = savedData.faceitElo !== "-" ? savedData.faceitElo : 0;
         try {
             if (!player_id) {
@@ -116,7 +161,9 @@ async function verificarCambioDeDia() {
             }
             const info = await fetchOfficial(`players/${player_id}`);
             fctElo = info.games.cs2.faceit_elo;
-        } catch(e) {}
+        } catch (e) {
+            console.error('⚠️  [6AM] Error consultando Faceit:', e.message);
+        }
 
         let prmElo = savedData.premierElo;
         let prmWins = savedData.premierWins;
@@ -126,10 +173,12 @@ async function verificarCambioDeDia() {
                 prmElo = pData.elo;
                 prmWins = pData.wins;
             }
-        } catch(e) {}
+        } catch (e) {
+            console.error('⚠️  [6AM] Error consultando Premier:', e.message);
+        }
 
         const newData = { date: todayStrLocal, faceitElo: fctElo, premierElo: prmElo, premierWins: prmWins };
-        fs.writeFileSync(DATA_FILE, JSON.stringify(newData));
+        safeWriteJson(DATA_FILE, newData);
     } else {
         // Parche: Si a las 6 AM Valve estaba caído, guarda la foto en cuanto recupere conexión
         if ((savedData.premierElo === "-" || savedData.premierElo === undefined) && csgo.haveGCSession) {
@@ -137,13 +186,12 @@ async function verificarCambioDeDia() {
             if (pData.elo !== "-") {
                 savedData.premierElo = pData.elo;
                 savedData.premierWins = pData.wins;
-                fs.writeFileSync(DATA_FILE, JSON.stringify(savedData));
+                safeWriteJson(DATA_FILE, savedData);
             }
         }
     }
 }
 
-// --- EL CALCULADOR (SOLO LEE, NUNCA SOBREESCRIBE LA BASE) ---
 // --- EL CALCULADOR (SOLO LEE, NUNCA SOBREESCRIBE LA BASE) ---
 async function updateCurrentStats() {
     try {
@@ -155,36 +203,35 @@ async function updateCurrentStats() {
         const info = await fetchOfficial(`players/${player_id}`);
         const currentEloFaceit = info.games.cs2.faceit_elo;
         const currentLevelFaceit = info.games.cs2.skill_level;
-        
+
         const premierData = await fetchPremierData();
         const todayStrLocal = getStreamerDate(new Date());
 
-        let baseline = { 
-            date: todayStrLocal, 
-            faceitElo: currentEloFaceit, 
-            premierElo: premierData.elo, 
-            lastPremierElo: premierData.elo, // Memoria a corto plazo
+        let baseline = {
+            date: todayStrLocal,
+            faceitElo: currentEloFaceit,
+            premierElo: premierData.elo,
+            lastPremierElo: premierData.elo,
             dailyPremierWins: 0,
             dailyPremierLosses: 0
-        }; 
+        };
 
         let fileData = {};
         if (fs.existsSync(DATA_FILE)) {
-            try { 
-                fileData = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); 
+            try {
+                fileData = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
                 if (fileData.date === todayStrLocal) {
                     baseline.faceitElo = fileData.faceitElo || fileData.elo || currentEloFaceit;
                     baseline.premierElo = fileData.premierElo !== undefined ? fileData.premierElo : premierData.elo;
-                    // Recuperamos el último ELO visto
-                    baseline.lastPremierElo = fileData.lastPremierElo !== undefined ? fileData.lastPremierElo : baseline.premierElo;
-                    // Recuperamos los contadores DIARIOS (ignorando el historial total de Valve)
+                    // FIX v15: si lastPremierElo no está, inicializar al ELO ACTUAL (no al baseline del día)
+                    baseline.lastPremierElo = fileData.lastPremierElo !== undefined ? fileData.lastPremierElo : premierData.elo;
                     baseline.dailyPremierWins = fileData.dailyPremierWins || 0;
                     baseline.dailyPremierLosses = fileData.dailyPremierLosses || 0;
                 }
-            } catch(e) {}
+            } catch (e) {}
         }
-        
-        // --- NUEVA LÓGICA DE PREMIER (W/L POR ELO) ---
+
+        // --- LÓGICA DE PREMIER (W/L POR ELO) ---
         let memoryUpdated = false;
         if (baseline.lastPremierElo !== "-" && premierData.elo !== "-") {
             if (premierData.elo > baseline.lastPremierElo) {
@@ -198,15 +245,15 @@ async function updateCurrentStats() {
             }
         }
 
-        // Guardamos los datos nuevos en el archivo sin borrar lo que puso la función de las 6:00 AM
-        if (memoryUpdated || fileData.lastPremierElo === undefined) {
+        // FIX v15: solo guardar lastPremierElo si tenemos un valor válido (no "-")
+        if (memoryUpdated || (fileData.lastPremierElo === undefined && premierData.elo !== "-")) {
             fileData.lastPremierElo = baseline.lastPremierElo;
             fileData.dailyPremierWins = baseline.dailyPremierWins;
             fileData.dailyPremierLosses = baseline.dailyPremierLosses;
-            fs.writeFileSync(DATA_FILE, JSON.stringify(fileData));
+            safeWriteJson(DATA_FILE, fileData);
         }
 
-        // --- LÓGICA DE FACEIT (INTACTA: POR HISTORIAL) ---
+        // --- LÓGICA DE FACEIT (POR HISTORIAL) ---
         const history = await fetchOfficial(`players/${player_id}/history?game=cs2&limit=50`);
         let fWins = 0, fLosses = 0;
 
@@ -219,18 +266,18 @@ async function updateCurrentStats() {
         }
 
         const fDelta = currentEloFaceit - baseline.faceitElo;
-        
+
         let pDelta = 0;
         if (premierData.elo !== "-" && baseline.premierElo !== "-") {
             pDelta = premierData.elo - baseline.premierElo;
         }
 
-        cachedStats = { 
+        cachedStats = {
             faceit: {
-                level: currentLevelFaceit, 
-                elo: currentEloFaceit, 
-                sessionElo: fDelta >= 0 ? `+${fDelta}` : fDelta.toString(), 
-                wins: fWins, 
+                level: currentLevelFaceit,
+                elo: currentEloFaceit,
+                sessionElo: fDelta >= 0 ? `+${fDelta}` : fDelta.toString(),
+                wins: fWins,
                 losses: fLosses
             },
             premier: {
@@ -240,7 +287,7 @@ async function updateCurrentStats() {
                 losses: baseline.dailyPremierLosses
             }
         };
-        
+
         console.log(`🧮 FCT: ${currentEloFaceit} (${cachedStats.faceit.sessionElo}) [W:${cachedStats.faceit.wins}/L:${cachedStats.faceit.losses}] | PRM: ${premierData.elo} (${cachedStats.premier.sessionElo}) [W:${cachedStats.premier.wins}/L:${cachedStats.premier.losses}]`);
     } catch (error) {
         console.error("❌ Error en el Calculador:", error.message);
@@ -260,7 +307,7 @@ app.get('/api/stats', (req, res) => {
 // El vigilante de las 6:00 AM (revisa la hora cada minuto)
 setInterval(verificarCambioDeDia, 60000);
 
-// Actualización regular de datos (cada 5 min)
+// Actualización regular de datos (cada minuto si hay sesión GC)
 setInterval(() => {
     if (csgo.haveGCSession) updateCurrentStats();
 }, 60000);
